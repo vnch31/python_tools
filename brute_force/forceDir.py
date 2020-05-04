@@ -1,4 +1,4 @@
-import requests
+import urllib3
 import threading
 import queue
 import argparse
@@ -13,14 +13,20 @@ parser.add_argument("-t", "--threads", help="number of threads", default=10)
 parser.add_argument("-a", "--useragent", help="user-agent to use", default="Mozilla/5.0 (X11; Linux x86_64; rv:19.0) Gecko/20100101 Firefox/19.0")
 parser.add_argument("-e", "--extensions", help="Extensions lists", nargs="+")
 args = parser.parse_args()
-target_url = args.url
+if args.url.endswith('/'):
+    target_url = args.url.rstrip('/')
+else:
+    target_url = args.url
 wordlist_file = args.wordlist
 threads  = args.threads
 resume = None
 user_agent = args.useragent
+threads_list = []
 
 """ Handle control-c """
 def signal_handler(signal, frame):
+    for thread in threads_list:
+        thread.kill_received = True
     print(f"\n {bcolors.BOLD}Exiting program...{bcolors.ENDC}")
     sys.exit(0)
 
@@ -37,6 +43,8 @@ class bcolors:
     BOLD = '\033[1m'
     UNDERLINE = '\033[4m'
 
+""" urllib3 """
+http = urllib3.PoolManager()
 
 try:
 
@@ -76,23 +84,32 @@ try:
             # if extensions is given
             if extensions:
                 for ext in extensions:
-                    attempt_list.append(f"/{attempt}{ext}")
+                    attempt_list.append(f"/{attempt}.{ext}")
 
             for brute in attempt_list:
                 url = target_url + brute
                 sys.stdout.write('\033[K')
                 print(url, end='\r')
                 try:
-                    headers = {}
+                    headers = {}    
                     headers['User-Agent'] = user_agent
-                    response = requests.get(url, headers=headers)
-                    
-                    if response.status_code == 200:
-                        print (f"{bcolors.OKGREEN}[+][{response.status_code}] => {url}{bcolors.ENDC}")
+                    r = http.request('GET', url, headers=headers)
+                    r_headers = dict(r.headers)
+                    try:
+                        content_length = r_headers['Content-Length']
+                    except KeyError:
+                        content_length = "?"
+                    if r.status == 200:
+                        print (f"{bcolors.OKGREEN}[{r.status}]{bcolors.ENDC} - {content_length} KB => {url}")
+                    elif r.status == 302:
+                        r = http.request('GET', url, headers=headers, redirect=True)
+                        print (f"{bcolors.WARNING}[{r.status}]{bcolors.ENDC} - {content_length} KB => {url} redirect to => {r.geturl()} ")
+                    elif r.status != 404:
+                        print (f"{bcolors.WARNING}[{r.status}]{bcolors.ENDC} - {content_length} KB  => {url}")
 
-                except requests.HTTPError as e:
-                    #if response.status_code != 404:                     
-                    print (f"{bcolors.FAIL}[-][{e.code}] =>{url}{bcolors.ENDC}")                  
+                except urllib3.exceptions.HTTPError as e:
+                    if r.status != 404:                     
+                        print (f"{bcolors.FAIL}[{e.code}]{bcolors.ENDC} =>{url}")                  
                     pass
 
     def print_banner():
@@ -109,16 +126,17 @@ try:
             
     print_banner()
     word_q = build_wordlist(wordlist_file)
+    print(f'{bcolors.OKBLUE}[+]{word_q.qsize()}{bcolors.ENDC} words to test : ')
     if args.extensions:
         extensions = args.extensions
     else:
-        extensions = ['.php', '.bak']
-
+        extensions = ['html']
     for i in range(threads):
         t = threading.Thread(target=dir_bruter, args=(word_q, extensions))
         t.start()
+        threads_list.append(t)
 except:
-    print(f"{bcolors.FAIL}[-] An error occured")
+    print(f"{bcolors.FAIL}[-] An error occured{bcolors.ENDC}")
     exit(1)
 
 
